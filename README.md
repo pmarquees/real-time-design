@@ -16,19 +16,21 @@
 ╚═════╝ ╚══════╝╚══════╝╚═╝ ╚═════╝ ╚═╝  ╚═══╝
 ```
 
-Real Time Design is a terminal voice surface for coding. You open it in one folder, point it at the repo you want to edit, and talk continuously. OpenAI Realtime listens for coding instructions, turns them into structured tasks, and dispatches those tasks to the local Codex CLI running `gpt-5.3-codex-spark`.
+Real Time Design is a terminal voice surface for coding. You open it in one folder, point it at the repo you want to edit, and talk continuously. OpenAI Realtime listens for coding instructions, turns them into structured tasks, and dispatches those tasks to a local coding CLI.
 
-No push-to-talk. No separate transcription step. Speak, correct yourself, interrupt, and let Codex agents work.
+Codex is the default backend when installed. Claude CLI is also supported, defaulting to `sonnet`.
+
+No push-to-talk. No separate transcription step. Speak, correct yourself, interrupt, and let coding agents work.
 
 ## What It Does
 
 - Streams microphone audio to the OpenAI Realtime API.
 - Uses semantic VAD to detect when a spoken coding instruction is complete.
 - Extracts structured tasks such as `edit header`, `run tests`, or `create component`.
-- Starts local `codex exec` agents against the target repo.
+- Starts local Codex or Claude agents against the target repo.
 - Runs independent voice tasks in parallel.
 - Supports barge-in corrections like "actually make it green instead" or "stop that."
-- Shows a compact TUI with listening state, created tasks, Codex status, and the current step.
+- Shows a compact TUI with listening state, created tasks, agent status, and the current step.
 
 ## Quick Start
 
@@ -45,10 +47,12 @@ cd /path/to/your/project
 printf "OPENAI_API_KEY=sk-...\n" > .env
 ```
 
-Make sure Codex CLI is installed and logged in:
+Make sure at least one coding CLI is installed and logged in:
 
 ```bash
 codex login
+# or
+claude auth
 ```
 
 Start Real Time Design from that project folder:
@@ -74,7 +78,7 @@ npm run dev -- --cwd /path/to/project
 ## Requirements
 
 - Node.js 20+
-- A working `codex` CLI login
+- A working Codex CLI or Claude CLI login
 - OpenAI API key for Realtime voice
 - Microphone access in your terminal
 - SoX on macOS if local audio capture needs it:
@@ -97,21 +101,56 @@ Real Time Design scheduler
    ▼
 codex exec -m gpt-5.3-codex-spark
    │
+   ├─ or
+   ▼
+claude --print --model sonnet
+   │
    ▼
 local repo edits
 ```
 
-The voice model never writes code directly. It only decides whether your speech contains an actionable coding task. Real Time Design then routes that task into Codex, which edits the target workspace.
+The voice model never writes code directly. It only decides whether your speech contains an actionable coding task. Real Time Design then routes that task into the selected coding CLI, which edits the target workspace.
 
 ## Controls
 
 - `q` or `Ctrl+C`: quit
 - `m`: mute or unmute microphone streaming
-- `u`: ask Codex to undo the last change
+- `u`: ask the selected agent to undo the last change
+- `a`: open the agent/model picker for future tasks
+
+In the picker:
+
+- `Up`/`Down` or `j`/`k`: move
+- `Enter`: select
+- `Esc`: close
+
+## Choosing A Coding CLI
+
+Real Time Design defaults to Codex when both Codex and Claude are installed:
+
+```bash
+rtd
+```
+
+Pick a backend explicitly:
+
+```bash
+rtd --agent codex
+rtd --agent claude
+```
+
+Customize models:
+
+```bash
+rtd --codex-model gpt-5.3-codex-spark
+rtd --claude-model sonnet
+```
+
+Inside the TUI, press `a` to choose from the installed backend/model combinations. Active tasks keep the model they started with; the picker changes future tasks only.
 
 ## Parallel Agents
 
-By default, Real Time Design can run up to four Codex agents at once:
+By default, Real Time Design can run up to four coding agents at once:
 
 ```bash
 rtd --max-agents 4
@@ -125,7 +164,7 @@ Separate tasks run in parallel. For example:
 "Run the typecheck."
 ```
 
-Those can become separate Codex runs.
+Those can become separate agent runs.
 
 ## Barge-In
 
@@ -158,14 +197,14 @@ This is an early prototype. The core loop works:
 
 - Realtime voice session
 - Task extraction
-- Parallel Codex dispatch
+- Parallel Codex/Claude dispatch
 - Barge-in restart/cancel behavior
 - Compact task/status TUI
 
 Still rough:
 
 - Barge-in classification is heuristic.
-- Codex progress is inferred from CLI output.
+- Agent progress is inferred from CLI output.
 - Parallel agents can still conflict if you ask them to edit the same files.
 - Realtime session reconnect is basic.
 

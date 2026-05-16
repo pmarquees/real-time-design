@@ -1,11 +1,14 @@
 import {spawn, type ChildProcessWithoutNullStreams} from "node:child_process";
 import {EventEmitter} from "node:events";
-import type {CodeIntent, CodexRun} from "./types.js";
+import type {AgentCli, CodeIntent, CodexRun} from "./types.js";
 
 interface CodexRunnerOptions {
   cwd: string;
-  model: string;
+  agentCli: AgentCli;
+  codexModel: string;
+  claudeModel: string;
   codexBin: string;
+  claudeBin: string;
   maxParallel: number;
 }
 
@@ -81,23 +84,15 @@ export class CodexRunner extends EventEmitter {
       startedAt: Date.now(),
       output: "",
       status: "running",
-      summary: "starting Codex",
+      summary: `starting ${agentLabel(this.options.agentCli)}`,
+      agentCli: this.options.agentCli,
+      agentModel: this.modelForAgent(),
       parentRunId,
       note
     };
     this.lastRun = run;
 
-    const child = spawn(this.options.codexBin, [
-      "exec",
-      "-m",
-      this.options.model,
-      "-C",
-      this.options.cwd,
-      "--skip-git-repo-check",
-      "--sandbox",
-      "workspace-write",
-      "-"
-    ], {
+    const child = spawn(this.binForAgent(), this.argsForAgent(), {
       cwd: this.options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env
@@ -107,19 +102,19 @@ export class CodexRunner extends EventEmitter {
     this.emit("start", run);
     this.emitActive();
 
-    child.stdin.end(buildPrompt(intent, note));
+    child.stdin.end(buildPrompt(intent, this.options.agentCli, note));
 
     child.stdout.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       run.output += text;
-      run.summary = summarizeCodexStep(text, run.summary);
+      run.summary = summarizeAgentStep(text, run.summary);
       this.emit("delta", run, text);
     });
 
     child.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       run.output += text;
-      run.summary = summarizeCodexStep(text, run.summary);
+      run.summary = summarizeAgentStep(text, run.summary);
       this.emit("delta", run, text);
     });
 
@@ -203,9 +198,41 @@ export class CodexRunner extends EventEmitter {
   private emitActive() {
     this.emit("active", this.getActiveRuns());
   }
+
+  private binForAgent() {
+    return this.options.agentCli === "claude" ? this.options.claudeBin : this.options.codexBin;
+  }
+
+  private modelForAgent() {
+    return this.options.agentCli === "claude" ? this.options.claudeModel : this.options.codexModel;
+  }
+
+  private argsForAgent() {
+    if (this.options.agentCli === "claude") {
+      return [
+        "--print",
+        "--model",
+        this.options.claudeModel,
+        "--permission-mode",
+        "acceptEdits"
+      ];
+    }
+
+    return [
+      "exec",
+      "-m",
+      this.options.codexModel,
+      "-C",
+      this.options.cwd,
+      "--skip-git-repo-check",
+      "--sandbox",
+      "workspace-write",
+      "-"
+    ];
+  }
 }
 
-function buildPrompt(intent: CodeIntent, note?: string) {
+function buildPrompt(intent: CodeIntent, agentCli: AgentCli, note?: string) {
   if (intent.action === "undo") {
     return [
       "Undo the most recent code change you made in this workspace.",
@@ -216,9 +243,9 @@ function buildPrompt(intent: CodeIntent, note?: string) {
 
   return [
     "You are being driven by a realtime voice coding terminal called Real Time Design.",
-    "Act on the user's finalized voice instruction in this local workspace.",
+    `Act on the user's finalized voice instruction in this local workspace using ${agentLabel(agentCli)}.`,
     "Make the requested code changes directly. Keep scope tight and preserve unrelated work.",
-    "Other Codex agents may be running in parallel in this same workspace.",
+    "Other coding agents may be running in parallel in this same workspace.",
     "Before editing, inspect the relevant files and avoid overwriting unrelated concurrent changes.",
     "When finished, briefly summarize changed files and validation performed.",
     note ? `Dispatch note: ${note}` : undefined,
@@ -267,14 +294,14 @@ function isLikelySameTask(next: CodeIntent, active: CodeIntent) {
   return next.action === active.action || !nextTarget || nextTarget === activeTarget;
 }
 
-function summarizeCodexStep(text: string, previous = "working") {
+function summarizeAgentStep(text: string, previous = "working") {
   const lines = text
     .split(/\r?\n/)
     .map((line) => stripAnsi(line).trim())
     .filter(Boolean);
 
   for (const line of lines.reverse()) {
-    const toolMatch = line.match(/^(exec|apply_patch|read|write|search|update_plan|codex)\b[:\s-]*(.*)$/i);
+    const toolMatch = line.match(/^(exec|apply_patch|read|write|search|update_plan|codex|claude|bash|edit|read)\b[:\s-]*(.*)$/i);
     if (toolMatch) {
       return compact(`${toolMatch[1].toLowerCase()} ${toolMatch[2] ?? ""}`);
     }
@@ -299,4 +326,8 @@ function stripAnsi(value: string) {
 
 function compact(value: string) {
   return value.replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
+function agentLabel(agentCli: AgentCli) {
+  return agentCli === "claude" ? "Claude" : "Codex";
 }

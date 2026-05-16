@@ -9,6 +9,7 @@ export type VoiceMode =
   | "error";
 
 export type CodeIntentAction = "create" | "edit" | "delete" | "explain" | "run" | "undo";
+export type AgentCli = "codex" | "claude";
 
 export interface CodeIntent {
   action: CodeIntentAction;
@@ -34,6 +35,8 @@ export interface CodexRun {
   error?: string;
   status: "running" | "done" | "killed" | "error";
   summary?: string;
+  agentCli: AgentCli;
+  agentModel: string;
   parentRunId?: string;
   note?: string;
 }
@@ -49,6 +52,9 @@ export interface AppState {
   cwd: string;
   realtimeModel: string;
   codexModel: string;
+  claudeModel: string;
+  agentCli: AgentCli;
+  availableAgents: AgentCli[];
   voiceMode: VoiceMode;
   muted: boolean;
   gain: number;

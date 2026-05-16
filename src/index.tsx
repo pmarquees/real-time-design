@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import "dotenv/config";
+import {spawnSync} from "node:child_process";
 import process from "node:process";
 import React, {useEffect, useMemo, useRef, useState} from "react";
 import {Command} from "commander";
@@ -7,19 +8,25 @@ import {Box, Newline, render, Text, useApp, useInput, useStdin} from "ink";
 import {AudioCapture} from "./audio.js";
 import {CodexRunner} from "./codex.js";
 import {RealtimeVoiceClient} from "./realtime.js";
-import type {AppState, CodeIntent, CodexRun, TranscriptLine, VoiceMode} from "./types.js";
+import type {AgentCli, AppState, CodeIntent, CodexRun, TranscriptLine, VoiceMode} from "./types.js";
 
 const DEFAULT_REALTIME_MODEL = process.env.RTD_REALTIME_MODEL ?? "gpt-realtime-2";
 const DEFAULT_CODEX_MODEL = process.env.RTD_CODEX_MODEL ?? "gpt-5.3-codex-spark";
+const DEFAULT_CLAUDE_MODEL = process.env.RTD_CLAUDE_MODEL ?? "sonnet";
+const DEFAULT_CODEX_MODELS = ["gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.5"];
+const DEFAULT_CLAUDE_MODELS = ["sonnet", "opus", "haiku"];
 
 const program = new Command()
   .name("rtd")
-  .description("Realtime voice coding terminal that routes OpenAI Realtime intents into Codex CLI")
-  .option("-C, --cwd <dir>", "workspace to run Codex in", process.cwd())
+  .description("Realtime voice coding terminal that routes OpenAI Realtime intents into a local coding CLI")
+  .option("-C, --cwd <dir>", "workspace to run the coding agent in", process.cwd())
   .option("--realtime-model <model>", "Realtime API model", DEFAULT_REALTIME_MODEL)
   .option("--codex-model <model>", "Codex CLI model", DEFAULT_CODEX_MODEL)
+  .option("--claude-model <model>", "Claude CLI model", DEFAULT_CLAUDE_MODEL)
+  .option("--agent <agent>", "coding agent CLI: auto, codex, or claude", parseAgentChoice, "auto")
   .option("--codex-bin <path>", "Codex executable", "codex")
-  .option("--max-agents <count>", "maximum parallel Codex agents", parsePositiveInt, 4)
+  .option("--claude-bin <path>", "Claude executable", "claude")
+  .option("--max-agents <count>", "maximum parallel coding agents", parsePositiveInt, 4)
   .option("--no-audio", "disable microphone capture and run UI only")
   .parse(process.argv);
 
@@ -27,16 +34,33 @@ interface CliOptions {
   cwd: string;
   realtimeModel: string;
   codexModel: string;
+  claudeModel: string;
+  agent: "auto" | AgentCli;
   codexBin: string;
+  claudeBin: string;
   maxAgents: number;
   audio: boolean;
 }
 
+interface ModelChoice {
+  agentCli: AgentCli;
+  model: string;
+}
+
 const options = program.opts<CliOptions>();
+const availableAgents = detectAvailableAgents(options);
+const initialAgent = resolveInitialAgent(options.agent, availableAgents);
+const modelChoices = buildModelChoices(options, availableAgents);
 
-render(process.env.OPENAI_API_KEY ? <RealtimeDesignApp options={options} /> : <OnboardingApp cwd={options.cwd} />);
+render(process.env.OPENAI_API_KEY && availableAgents.length > 0 ? (
+  <RealtimeDesignApp options={options} availableAgents={availableAgents} initialAgent={initialAgent} />
+) : process.env.OPENAI_API_KEY ? (
+  <AgentSetupApp cwd={options.cwd} />
+) : (
+  <OnboardingApp cwd={options.cwd} availableAgents={availableAgents} />
+));
 
-function OnboardingApp({cwd}: {cwd: string}) {
+function OnboardingApp({cwd, availableAgents}: {cwd: string; availableAgents: AgentCli[]}) {
   const {exit} = useApp();
   const {isRawModeSupported} = useStdin();
 
@@ -66,23 +90,67 @@ function OnboardingApp({cwd}: {cwd: string}) {
         <Text color="cyan">Or create a local .env in this project:</Text>
         <Text>  printf 'OPENAI_API_KEY=sk-...\n' &gt; .env</Text>
         <Newline />
-        <Text color="gray">Also make sure Codex is installed and signed in: `codex login`</Text>
+        <Text color="gray">Installed coding CLIs: {availableAgents.length > 0 ? availableAgents.join(", ") : "none detected"}</Text>
+        <Text color="gray">Also make sure at least one coding CLI is signed in: `codex login` or `claude auth`</Text>
         <Text color="gray">{isRawModeSupported ? "Press q to quit." : "Quit with Ctrl+C."}</Text>
       </Box>
     </Box>
   );
 }
 
-function RealtimeDesignApp({options}: {options: CliOptions}) {
+function AgentSetupApp({cwd}: {cwd: string}) {
+  const {exit} = useApp();
+  const {isRawModeSupported} = useStdin();
+
+  if (isRawModeSupported) {
+    useInput((input, key) => {
+      if (input === "q" || key.escape || (key.ctrl && input === "c")) {
+        exit();
+      }
+    });
+  }
+
+  return (
+    <Box flexDirection="column" minHeight={14}>
+      <Box justifyContent="space-between">
+        <Text bold>real time design</Text>
+        <Text color="gray">{cwd}</Text>
+      </Box>
+      <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1} marginTop={1}>
+        <Text color="yellow">Coding CLI needed</Text>
+        <Newline />
+        <Text>Real Time Design needs Codex CLI or Claude CLI to edit files.</Text>
+        <Text>Install and sign in to at least one of them, then run `rtd` again.</Text>
+        <Newline />
+        <Text color="cyan">Preferred:</Text>
+        <Text>  codex login</Text>
+        <Newline />
+        <Text color="cyan">Also supported:</Text>
+        <Text>  claude auth</Text>
+        <Text color="gray">{isRawModeSupported ? "Press q to quit." : "Quit with Ctrl+C."}</Text>
+      </Box>
+    </Box>
+  );
+}
+
+function RealtimeDesignApp({options, availableAgents, initialAgent}: {options: CliOptions; availableAgents: AgentCli[]; initialAgent: AgentCli}) {
   const {exit} = useApp();
   const {isRawModeSupported} = useStdin();
   const voiceRef = useRef<RealtimeVoiceClient>();
   const audioRef = useRef<AudioCapture>();
   const codexRef = useRef<CodexRunner>();
+  const [agentCli, setAgentCli] = useState<AgentCli>(initialAgent);
+  const [codexModel, setCodexModel] = useState(options.codexModel);
+  const [claudeModel, setClaudeModel] = useState(options.claudeModel);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [modelPickerIndex, setModelPickerIndex] = useState(() => initialModelChoiceIndex(modelChoices, initialAgent, options));
   const [state, setState] = useState<AppState>(() => ({
     cwd: options.cwd,
     realtimeModel: options.realtimeModel,
-    codexModel: options.codexModel,
+    codexModel,
+    claudeModel,
+    agentCli: initialAgent,
+    availableAgents,
     voiceMode: "connecting",
     muted: false,
     gain: 0,
@@ -107,8 +175,11 @@ function RealtimeDesignApp({options}: {options: CliOptions}) {
     });
     const codex = new CodexRunner({
       cwd: options.cwd,
-      model: options.codexModel,
+      agentCli,
+      codexModel,
+      claudeModel,
       codexBin: options.codexBin,
+      claudeBin: options.claudeBin,
       maxParallel: options.maxAgents
     });
     const audio = new AudioCapture({sampleRate: 24000, chunkBytes: 960});
@@ -199,8 +270,9 @@ function RealtimeDesignApp({options}: {options: CliOptions}) {
       setState((current) => ({
         ...current,
         activeRun: run,
+        agentCli,
         activeRuns: upsertRun(current.activeRuns, run),
-        statusMessage: `Codex agent started (${current.activeRuns.length + 1}/${options.maxAgents})`,
+        statusMessage: `${agentLabel(run.agentCli)} agent started (${current.activeRuns.length + 1}/${options.maxAgents})`,
         usage: {...current.usage, codexRuns: current.usage.codexRuns + 1}
       }));
     });
@@ -238,8 +310,8 @@ function RealtimeDesignApp({options}: {options: CliOptions}) {
         activeRuns: current.activeRuns.filter((active) => active.id !== run.id),
         codexRuns: [run, ...current.codexRuns].slice(0, 10),
         statusMessage: run.status === "killed"
-          ? "Codex agent interrupted"
-          : run.exitCode === 0 ? "Codex agent finished" : `Codex exited ${run.exitCode ?? "unknown"}`
+          ? `${agentLabel(run.agentCli)} agent interrupted`
+          : run.exitCode === 0 ? `${agentLabel(run.agentCli)} agent finished` : `${agentLabel(run.agentCli)} exited ${run.exitCode ?? "unknown"}`
       }));
     });
 
@@ -263,7 +335,7 @@ function RealtimeDesignApp({options}: {options: CliOptions}) {
       voice.disconnect();
       codex.stopAll();
     };
-  }, [options.audio, options.codexBin, options.codexModel, options.cwd, options.maxAgents, options.realtimeModel]);
+  }, [agentCli, claudeModel, codexModel, options.audio, options.claudeBin, options.codexBin, options.cwd, options.maxAgents, options.realtimeModel]);
 
   const visibleRuns = state.activeRuns.length > 0 ? state.activeRuns : state.codexRuns.slice(0, 3);
   const latestTranscript = useMemo(() => state.transcripts.at(-1), [state.transcripts]);
@@ -291,6 +363,42 @@ function RealtimeDesignApp({options}: {options: CliOptions}) {
             codexRef.current?.enqueue(intent);
             setState((current) => ({...current, lastIntent: intent, statusMessage: "queued undo"}));
           }}
+          pickerOpen={modelPickerOpen}
+          pickerCount={modelChoices.length}
+          onOpenPicker={() => {
+            if (state.activeRuns.length > 0) {
+              setState((current) => ({...current, statusMessage: "finish active tasks before changing model"}));
+              return;
+            }
+
+            setModelPickerOpen(true);
+            setModelPickerIndex(currentModelChoiceIndex(modelChoices, agentCli, agentCli === "claude" ? claudeModel : codexModel));
+          }}
+          onClosePicker={() => setModelPickerOpen(false)}
+          onMovePicker={(delta) => {
+            setModelPickerIndex((current) => wrapIndex(current + delta, modelChoices.length));
+          }}
+          onSelectPicker={() => {
+            const choice = modelChoices[modelPickerIndex];
+            if (!choice) {
+              return;
+            }
+
+            setAgentCli(choice.agentCli);
+            if (choice.agentCli === "codex") {
+              setCodexModel(choice.model);
+            } else {
+              setClaudeModel(choice.model);
+            }
+            setState((current) => ({
+              ...current,
+              agentCli: choice.agentCli,
+              codexModel: choice.agentCli === "codex" ? choice.model : current.codexModel,
+              claudeModel: choice.agentCli === "claude" ? choice.model : current.claudeModel,
+              statusMessage: `selected ${agentLabel(choice.agentCli)} ${choice.model}`
+            }));
+            setModelPickerOpen(false);
+          }}
         />
       ) : null}
       <Header state={state} />
@@ -307,6 +415,9 @@ function RealtimeDesignApp({options}: {options: CliOptions}) {
       </Box>
       <Box flexDirection="column" borderStyle="round" borderColor={state.activeRuns.length > 0 ? "green" : "gray"} paddingX={1} flexGrow={1} minHeight={12}>
         <Text color="green">Tasks</Text>
+        {modelPickerOpen ? (
+          <ModelPicker choices={modelChoices} selectedIndex={modelPickerIndex} />
+        ) : null}
         {visibleRuns.length > 0 ? <TaskList runs={visibleRuns} /> : <Text color="gray">No tasks dispatched yet.</Text>}
         {state.error ? (
           <>
@@ -320,8 +431,47 @@ function RealtimeDesignApp({options}: {options: CliOptions}) {
   );
 }
 
-function KeyboardShortcuts({onQuit, onMute, onUndo}: {onQuit: () => void; onMute: () => void; onUndo: () => void}) {
+function KeyboardShortcuts({
+  onQuit,
+  onMute,
+  onUndo,
+  pickerOpen,
+  pickerCount,
+  onOpenPicker,
+  onClosePicker,
+  onMovePicker,
+  onSelectPicker
+}: {
+  onQuit: () => void;
+  onMute: () => void;
+  onUndo: () => void;
+  pickerOpen: boolean;
+  pickerCount: number;
+  onOpenPicker: () => void;
+  onClosePicker: () => void;
+  onMovePicker: (delta: number) => void;
+  onSelectPicker: () => void;
+}) {
   useInput((input, key) => {
+    if (pickerOpen) {
+      if (key.escape || input === "a") {
+        onClosePicker();
+        return;
+      }
+      if (key.return) {
+        onSelectPicker();
+        return;
+      }
+      if (key.upArrow || input === "k") {
+        onMovePicker(-1);
+        return;
+      }
+      if (key.downArrow || input === "j") {
+        onMovePicker(1);
+        return;
+      }
+    }
+
     if (input === "q" || key.escape || (key.ctrl && input === "c")) {
       onQuit();
       return;
@@ -334,9 +484,30 @@ function KeyboardShortcuts({onQuit, onMute, onUndo}: {onQuit: () => void; onMute
     if (input === "u") {
       onUndo();
     }
+
+    if (input === "a") {
+      if (pickerCount === 0) {
+        return;
+      }
+      onOpenPicker();
+    }
   });
 
   return null;
+}
+
+function ModelPicker({choices, selectedIndex}: {choices: ModelChoice[]; selectedIndex: number}) {
+  return (
+    <Box flexDirection="column" borderStyle="single" borderColor="cyan" paddingX={1} marginBottom={1}>
+      <Text color="cyan">Choose agent/model for future tasks</Text>
+      {choices.map((choice, index) => (
+        <Text key={`${choice.agentCli}-${choice.model}`} color={index === selectedIndex ? "yellow" : "gray"}>
+          {index === selectedIndex ? "> " : "  "}{agentLabel(choice.agentCli)} · {choice.model}
+        </Text>
+      ))}
+      <Text color="gray">↑/↓ or j/k move · Enter select · Esc close</Text>
+    </Box>
+  );
 }
 
 function Header({state}: {state: AppState}) {
@@ -378,7 +549,7 @@ function TaskList({runs}: {runs: CodexRun[]}) {
       {runs.map((run, index) => (
         <Box key={run.id} flexDirection="column" marginBottom={1}>
           <Text color={statusColor(run.status)}>
-            {index + 1}. {statusIcon(run.status)} {run.status.toUpperCase()} · {run.intent.action}{run.intent.target ? ` · ${run.intent.target}` : ""}
+            {index + 1}. {statusIcon(run.status)} {run.status.toUpperCase()} · {agentLabel(run.agentCli)} · {run.intent.action}{run.intent.target ? ` · ${run.intent.target}` : ""}
           </Text>
           <Text>{truncate(run.intent.description, 130)}</Text>
           <Text color="gray">step: {run.summary ?? (run.status === "running" ? "working" : run.status)}</Text>
@@ -402,7 +573,7 @@ function StatusBar({state}: {state: AppState}) {
         <Text color="gray">turns {state.turns} queued {state.queued}</Text>
       </Text>
       <Text color="gray">
-        {audioKb}KB audio · ${realtimeCost.toFixed(2)} est · agents {state.activeRuns.length} · {state.codexModel} · q quit · m mute · u undo
+        {audioKb}KB audio · ${realtimeCost.toFixed(2)} est · {agentLabel(state.agentCli)} {state.agentCli === "claude" ? state.claudeModel : state.codexModel} · agents {state.activeRuns.length} · q quit · m mute · u undo · a agent
       </Text>
     </Box>
   );
@@ -513,4 +684,90 @@ function parsePositiveInt(value: string) {
     throw new Error("--max-agents must be a positive integer");
   }
   return parsed;
+}
+
+function parseAgentChoice(value: string) {
+  if (value === "auto" || value === "codex" || value === "claude") {
+    return value;
+  }
+
+  throw new Error("--agent must be auto, codex, or claude");
+}
+
+function detectAvailableAgents(options: CliOptions): AgentCli[] {
+  return [
+    commandExists(options.codexBin) ? "codex" : undefined,
+    commandExists(options.claudeBin) ? "claude" : undefined
+  ].filter(Boolean) as AgentCli[];
+}
+
+function commandExists(command: string) {
+  const result = spawnSync("sh", ["-lc", `command -v ${shellQuote(command)}`], {stdio: "ignore"});
+  return result.status === 0;
+}
+
+function resolveInitialAgent(requested: "auto" | AgentCli, availableAgents: AgentCli[]) {
+  if (requested !== "auto") {
+    return requested;
+  }
+
+  if (availableAgents.includes("codex")) {
+    return "codex";
+  }
+
+  if (availableAgents.includes("claude")) {
+    return "claude";
+  }
+
+  return "codex";
+}
+
+function shellQuote(value: string) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function agentLabel(agentCli: AgentCli) {
+  return agentCli === "claude" ? "Claude" : "Codex";
+}
+
+function buildModelChoices(options: CliOptions, availableAgents: AgentCli[]): ModelChoice[] {
+  const choices: ModelChoice[] = [];
+  if (availableAgents.includes("codex")) {
+    for (const model of unique([options.codexModel, ...DEFAULT_CODEX_MODELS])) {
+      choices.push({agentCli: "codex", model});
+    }
+  }
+
+  if (availableAgents.includes("claude")) {
+    for (const model of unique([options.claudeModel, ...DEFAULT_CLAUDE_MODELS])) {
+      choices.push({agentCli: "claude", model});
+    }
+  }
+
+  return choices;
+}
+
+function unique(values: string[]) {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function initialModelChoiceIndex(choices: ModelChoice[], initialAgent: AgentCli, options: CliOptions) {
+  return currentModelChoiceIndex(
+    choices,
+    initialAgent,
+    initialAgent === "claude" ? options.claudeModel : options.codexModel
+  );
+}
+
+function currentModelChoiceIndex(choices: ModelChoice[], agentCli: AgentCli, model: string) {
+  const index = choices.findIndex((choice) => choice.agentCli === agentCli && choice.model === model);
+  return index >= 0 ? index : 0;
+}
+
+function wrapIndex(index: number, length: number) {
+  if (length <= 0) {
+    return 0;
+  }
+
+  return ((index % length) + length) % length;
 }

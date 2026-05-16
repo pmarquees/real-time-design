@@ -34,12 +34,44 @@ interface CliOptions {
 
 const options = program.opts<CliOptions>();
 
-if (!process.env.OPENAI_API_KEY) {
-  console.error("OPENAI_API_KEY is required. Export it in your shell; do not commit it to this repo.");
-  process.exit(1);
-}
+render(process.env.OPENAI_API_KEY ? <RealtimeDesignApp options={options} /> : <OnboardingApp cwd={options.cwd} />);
 
-render(<RealtimeDesignApp options={options} />);
+function OnboardingApp({cwd}: {cwd: string}) {
+  const {exit} = useApp();
+  const {isRawModeSupported} = useStdin();
+
+  if (isRawModeSupported) {
+    useInput((input, key) => {
+      if (input === "q" || key.escape || (key.ctrl && input === "c")) {
+        exit();
+      }
+    });
+  }
+
+  return (
+    <Box flexDirection="column" minHeight={18}>
+      <Box justifyContent="space-between">
+        <Text bold>real time design</Text>
+        <Text color="gray">{cwd}</Text>
+      </Box>
+      <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1} marginTop={1}>
+        <Text color="yellow">OpenAI Realtime key needed</Text>
+        <Newline />
+        <Text>Real Time Design uses OpenAI Realtime for the always-on voice layer.</Text>
+        <Text>Set an API key, then run `rtd` again from the repo you want to edit.</Text>
+        <Newline />
+        <Text color="cyan">One-time shell setup:</Text>
+        <Text>  export OPENAI_API_KEY="sk-..."</Text>
+        <Newline />
+        <Text color="cyan">Or create a local .env in this project:</Text>
+        <Text>  printf 'OPENAI_API_KEY=sk-...\n' &gt; .env</Text>
+        <Newline />
+        <Text color="gray">Also make sure Codex is installed and signed in: `codex login`</Text>
+        <Text color="gray">{isRawModeSupported ? "Press q to quit." : "Quit with Ctrl+C."}</Text>
+      </Box>
+    </Box>
+  );
+}
 
 function RealtimeDesignApp({options}: {options: CliOptions}) {
   const {exit} = useApp();

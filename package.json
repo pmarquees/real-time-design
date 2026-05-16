@@ -1,20 +1,47 @@
 {
   "name": "real-time-design",
   "version": "0.1.0",
-  "private": true,
+  "description": "Realtime voice-to-Codex terminal for hands-free coding.",
+  "license": "MIT",
+  "author": "Pedro Marques",
+  "homepage": "https://github.com/pmarquees/real-time-design#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pmarquees/real-time-design.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pmarquees/real-time-design/issues"
+  },
+  "keywords": [
+    "codex",
+    "openai",
+    "realtime",
+    "voice",
+    "cli",
+    "tui",
+    "coding-agent"
+  ],
   "type": "module",
   "bin": {
     "rtd": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    ".env.example"
+  ],
   "scripts": {
     "dev": "tsx src/index.tsx",
     "build": "tsc",
+    "prepack": "npm run build",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
-    "chalk": "^5.4.1",
-    "cli-highlight": "^2.1.11",
     "commander": "^12.1.0",
     "dotenv": "^16.4.7",
     "ink": "^5.1.0",

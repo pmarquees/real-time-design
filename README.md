@@ -32,34 +32,43 @@ No push-to-talk. No separate transcription step. Speak, correct yourself, interr
 
 ## Quick Start
 
-Install dependencies:
+Install globally:
 
 ```bash
-npm install
+npm install -g real-time-design
 ```
 
-Create a local `.env`:
+Create a local `.env` in the repo where you want to use voice coding:
 
 ```bash
-cp .env.example .env
+cd /path/to/your/project
+printf "OPENAI_API_KEY=sk-...\n" > .env
 ```
 
-Add your key:
+Make sure Codex CLI is installed and logged in:
 
 ```bash
-OPENAI_API_KEY=sk-...
+codex login
 ```
 
-Run Real Time Design and point it at the repo you want Codex to edit:
+Start Real Time Design from that project folder:
 
 ```bash
-npm run dev -- --cwd /path/to/your/project
+rtd
 ```
 
 Example:
 
 ```bash
-npm run dev -- --cwd /Users/pmarques/Dev/lilapps/bikepark-atlas
+cd /Users/pmarques/Dev/lilapps/bikepark-atlas
+rtd
+```
+
+For local development on this repo:
+
+```bash
+npm install
+npm run dev -- --cwd /path/to/project
 ```
 
 ## Requirements
@@ -105,7 +114,7 @@ The voice model never writes code directly. It only decides whether your speech 
 By default, Real Time Design can run up to four Codex agents at once:
 
 ```bash
-npm run dev -- --cwd /path/to/project --max-agents 4
+rtd --max-agents 4
 ```
 
 Separate tasks run in parallel. For example:

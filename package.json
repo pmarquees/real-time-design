@@ -1,6 +1,6 @@
 {
   "name": "real-time-design",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Realtime voice-to-Codex terminal for hands-free coding.",
   "license": "MIT",
   "author": "Pedro Marques",

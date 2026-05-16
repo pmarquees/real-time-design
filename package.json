@@ -23,7 +23,7 @@
   ],
   "type": "module",
   "bin": {
-    "rtd": "./dist/index.js"
+    "rtd": "dist/index.js"
   },
   "files": [
     "dist",

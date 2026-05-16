@@ -27,6 +27,7 @@ No push-to-talk. No separate transcription step. Speak, correct yourself, interr
 - Streams microphone audio to the OpenAI Realtime API.
 - Uses semantic VAD to detect when a spoken coding instruction is complete.
 - Extracts structured tasks such as `edit header`, `run tests`, or `create component`.
+- Splits multi-part voice requests into separate tasks when they can run independently.
 - Starts local Codex or Claude agents against the target repo.
 - Runs independent voice tasks in parallel.
 - Supports barge-in corrections like "actually make it green instead" or "stop that."
@@ -165,6 +166,14 @@ Separate tasks run in parallel. For example:
 ```
 
 Those can become separate agent runs.
+
+Multi-part requests can also become separate runs from one utterance:
+
+```text
+"Make the nav red, widen the filter to 300px, and run the typecheck."
+```
+
+Realtime should split that into independent tasks so separate agents can start immediately.
 
 ## Barge-In
 

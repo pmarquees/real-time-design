@@ -160,7 +160,8 @@ export class CodexRunner extends EventEmitter {
       : undefined;
 
     if (isCancellation(description)) {
-      return {type: "cancel", run: targetMatch ?? activeRuns.at(-1)!, reason: "cancelled by voice"};
+      const run = targetMatch ?? (target ? undefined : activeRuns.at(-1));
+      return run ? {type: "cancel", run, reason: "cancelled by voice"} : {type: "new"};
     }
 
     if (intent.action === "undo") {
@@ -168,11 +169,8 @@ export class CodexRunner extends EventEmitter {
     }
 
     if (isBargeIn(description)) {
-      return {type: "restart", run: targetMatch ?? activeRuns.at(-1)!, reason: "voice correction"};
-    }
-
-    if (targetMatch && isLikelySameTask(intent, targetMatch.intent)) {
-      return {type: "restart", run: targetMatch, reason: "same target follow-up"};
+      const run = targetMatch ?? (isStrongBargeIn(description) && !target ? activeRuns.at(-1) : undefined);
+      return run ? {type: "restart", run, reason: "voice correction"} : {type: "new"};
     }
 
     return {type: "new"};
@@ -281,17 +279,11 @@ function isCancellation(description: string) {
 }
 
 function isBargeIn(description: string) {
-  return /\b(actually|wait|instead|rather|make that|change that|scratch that|correction|i mean|no,|not that)\b/.test(description);
+  return /\b(actually|instead|rather|make that|scratch that|correction|i mean|no,|not that)\b/.test(description);
 }
 
-function isLikelySameTask(next: CodeIntent, active: CodeIntent) {
-  const nextTarget = normalize(next.target);
-  const activeTarget = normalize(active.target);
-  if (nextTarget && activeTarget && nextTarget !== activeTarget) {
-    return false;
-  }
-
-  return next.action === active.action || !nextTarget || nextTarget === activeTarget;
+function isStrongBargeIn(description: string) {
+  return /\b(scratch that|never mind that|nevermind that|ignore that|replace that|start over|instead of that|no,? actually)\b/.test(description);
 }
 
 function summarizeAgentStep(text: string, previous = "working") {

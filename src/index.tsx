@@ -51,14 +51,40 @@ const options = program.opts<CliOptions>();
 const availableAgents = detectAvailableAgents(options);
 const initialAgent = resolveInitialAgent(options.agent, availableAgents);
 const modelChoices = buildModelChoices(options, availableAgents);
+const useAlternateScreen = process.stdout.isTTY && process.env.RTD_NO_ALT_SCREEN !== "1";
 
-render(process.env.OPENAI_API_KEY && availableAgents.length > 0 ? (
-  <RealtimeDesignApp options={options} availableAgents={availableAgents} initialAgent={initialAgent} />
-) : process.env.OPENAI_API_KEY ? (
-  <AgentSetupApp cwd={options.cwd} />
-) : (
-  <OnboardingApp cwd={options.cwd} availableAgents={availableAgents} />
-));
+if (useAlternateScreen) {
+  process.stdout.write("\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H");
+  process.once("exit", () => {
+    process.stdout.write("\x1b[?25h\x1b[?1049l");
+  });
+}
+
+render(
+  <TerminalScreen>
+    {process.env.OPENAI_API_KEY && availableAgents.length > 0 ? (
+      <RealtimeDesignApp options={options} availableAgents={availableAgents} initialAgent={initialAgent} />
+    ) : process.env.OPENAI_API_KEY ? (
+      <AgentSetupApp cwd={options.cwd} />
+    ) : (
+      <OnboardingApp cwd={options.cwd} availableAgents={availableAgents} />
+    )}
+  </TerminalScreen>
+);
+
+function TerminalScreen({children}: {children: React.ReactNode}) {
+  useEffect(() => {
+    if (!useAlternateScreen) {
+      return;
+    }
+
+    return () => {
+      process.stdout.write("\x1b[?25h\x1b[?1049l");
+    };
+  }, []);
+
+  return <>{children}</>;
+}
 
 function OnboardingApp({cwd, availableAgents}: {cwd: string; availableAgents: AgentCli[]}) {
   const {exit} = useApp();
@@ -139,6 +165,9 @@ function RealtimeDesignApp({options, availableAgents, initialAgent}: {options: C
   const voiceRef = useRef<RealtimeVoiceClient>();
   const audioRef = useRef<AudioCapture>();
   const codexRef = useRef<CodexRunner>();
+  const audioBytesRef = useRef(0);
+  const lastAudioPaintRef = useRef(0);
+  const recentIntentKeysRef = useRef(new Map<string, number>());
   const [agentCli, setAgentCli] = useState<AgentCli>(initialAgent);
   const [codexModel, setCodexModel] = useState(options.codexModel);
   const [claudeModel, setClaudeModel] = useState(options.claudeModel);
@@ -214,14 +243,27 @@ function RealtimeDesignApp({options, availableAgents, initialAgent}: {options: C
       }));
     });
 
-    voice.on("intent", (intent: CodeIntent) => {
-      codex.enqueue(intent);
+    voice.on("intents", (intents: CodeIntent[]) => {
+      const uniqueIntents = dedupeRecentIntents(intents, recentIntentKeysRef.current);
+      if (uniqueIntents.length === 0) {
+        return;
+      }
+
+      for (const intent of uniqueIntents) {
+        codex.enqueue(intent);
+      }
+      const lastIntent = uniqueIntents.at(-1);
       setState((current) => ({
         ...current,
-        turns: current.turns + 1,
-        lastIntent: intent,
-        transcripts: appendTranscript(current.transcripts, intent.description, true),
-        statusMessage: `dispatching ${intent.action}${intent.target ? ` ${intent.target}` : ""}`
+        turns: current.turns + uniqueIntents.length,
+        lastIntent,
+        transcripts: uniqueIntents.reduce(
+          (lines, intent) => appendTranscript(lines, intent.description, true),
+          current.transcripts
+        ),
+        statusMessage: uniqueIntents.length === 1
+          ? `dispatching ${lastIntent?.action}${lastIntent?.target ? ` ${lastIntent.target}` : ""}`
+          : `dispatching ${uniqueIntents.length} tasks`
       }));
     });
 
@@ -244,14 +286,21 @@ function RealtimeDesignApp({options, availableAgents, initialAgent}: {options: C
 
     audio.on("audio", (frame: Buffer) => {
       voice.appendAudio(frame);
-      setState((current) => ({
-        ...current,
-        usage: {...current.usage, audioBytes: current.usage.audioBytes + frame.length}
-      }));
+      audioBytesRef.current += frame.length;
     });
 
     audio.on("level", (level: number) => {
-      setState((current) => ({...current, gain: level}));
+      const now = Date.now();
+      if (now - lastAudioPaintRef.current < 120) {
+        return;
+      }
+
+      lastAudioPaintRef.current = now;
+      setState((current) => ({
+        ...current,
+        gain: level,
+        usage: {...current.usage, audioBytes: audioBytesRef.current}
+      }));
     });
 
     audio.on("error", (error: Error) => {
@@ -339,9 +388,12 @@ function RealtimeDesignApp({options, availableAgents, initialAgent}: {options: C
 
   const visibleRuns = state.activeRuns.length > 0 ? state.activeRuns : state.codexRuns.slice(0, 3);
   const latestTranscript = useMemo(() => state.transcripts.at(-1), [state.transcripts]);
+  const terminalRows = process.stdout.rows && process.stdout.rows > 0 ? process.stdout.rows : 30;
+  const appHeight = Math.max(20, terminalRows - 1);
+  const taskHeight = Math.max(8, appHeight - 12);
 
   return (
-    <Box flexDirection="column" minHeight={24}>
+    <Box flexDirection="column" height={appHeight}>
       {isRawModeSupported ? (
         <KeyboardShortcuts
           onQuit={() => {
@@ -401,9 +453,11 @@ function RealtimeDesignApp({options, availableAgents, initialAgent}: {options: C
           }}
         />
       ) : null}
-      <Header state={state} />
       <Box flexDirection="column" borderStyle="round" borderColor={state.voiceMode === "speaking" || state.voiceMode === "transcribing" ? "yellow" : "cyan"} paddingX={1} height={10}>
-        <Text color="cyan">Realtime voice</Text>
+        <Box justifyContent="space-between">
+          <Text color="cyan">real time design</Text>
+          <Text color="gray" wrap="truncate-middle">{state.cwd}</Text>
+        </Box>
         <Waveform gain={state.gain} muted={state.muted} mode={state.voiceMode} />
         {latestTranscript ? (
           <Text color={latestTranscript.final ? "gray" : "yellow"}>
@@ -413,7 +467,7 @@ function RealtimeDesignApp({options, availableAgents, initialAgent}: {options: C
           <Text color="gray">Listening for a coding task...</Text>
         )}
       </Box>
-      <Box flexDirection="column" borderStyle="round" borderColor={state.activeRuns.length > 0 ? "green" : "gray"} paddingX={1} flexGrow={1} minHeight={12}>
+      <Box flexDirection="column" borderStyle="round" borderColor={state.activeRuns.length > 0 ? "green" : "gray"} paddingX={1} height={taskHeight}>
         <Text color="green">Tasks</Text>
         {modelPickerOpen ? (
           <ModelPicker choices={modelChoices} selectedIndex={modelPickerIndex} />
@@ -510,15 +564,6 @@ function ModelPicker({choices, selectedIndex}: {choices: ModelChoice[]; selected
   );
 }
 
-function Header({state}: {state: AppState}) {
-  return (
-    <Box justifyContent="space-between">
-      <Text bold>real time design</Text>
-      <Text color="gray">{state.cwd}</Text>
-    </Box>
-  );
-}
-
 function Waveform({gain, muted, mode}: {gain: number; muted: boolean; mode: VoiceMode}) {
   const width = 72;
   const energy = Math.max(1, Math.min(width, Math.round(gain * 260)));
@@ -572,8 +617,8 @@ function StatusBar({state}: {state: AppState}) {
         {"  "}
         <Text color="gray">turns {state.turns} queued {state.queued}</Text>
       </Text>
-      <Text color="gray">
-        {audioKb}KB audio · ${realtimeCost.toFixed(2)} est · {agentLabel(state.agentCli)} {state.agentCli === "claude" ? state.claudeModel : state.codexModel} · agents {state.activeRuns.length} · q quit · m mute · u undo · a agent
+      <Text color="gray" wrap="truncate-start">
+        {audioKb}KB · ${realtimeCost.toFixed(2)} · {agentLabel(state.agentCli)} {state.agentCli === "claude" ? state.claudeModel : state.codexModel} · agents {state.activeRuns.length} · q/m/u/a
       </Text>
     </Box>
   );
@@ -612,6 +657,43 @@ function appendTranscript(lines: TranscriptLine[], text: string, final: boolean)
     ...lines.filter((line) => line.text !== text || line.final !== final),
     {id: `${Date.now()}-${Math.random()}`, text, final, createdAt: Date.now()}
   ].slice(-20);
+}
+
+function dedupeRecentIntents(intents: CodeIntent[], recent: Map<string, number>) {
+  const now = Date.now();
+  const windowMs = 6000;
+  for (const [key, timestamp] of recent) {
+    if (now - timestamp > windowMs) {
+      recent.delete(key);
+    }
+  }
+
+  const unique: CodeIntent[] = [];
+  const batchKeys = new Set<string>();
+  for (const intent of intents) {
+    const key = intentKey(intent);
+    if (batchKeys.has(key) || recent.has(key)) {
+      continue;
+    }
+
+    batchKeys.add(key);
+    recent.set(key, now);
+    unique.push(intent);
+  }
+
+  return unique;
+}
+
+function intentKey(intent: CodeIntent) {
+  return [
+    intent.action,
+    normalizeText(intent.target),
+    normalizeText(intent.description)
+  ].join("|");
+}
+
+function normalizeText(value?: string) {
+  return value?.trim().toLowerCase().replace(/\s+/g, " ") ?? "";
 }
 
 function statusLabel(status: VoiceMode) {

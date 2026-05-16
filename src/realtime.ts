@@ -25,6 +25,7 @@ interface PendingFunctionCall {
 export class RealtimeVoiceClient extends EventEmitter {
   private socket?: WebSocket;
   private pendingCalls = new Map<string, PendingFunctionCall>();
+  private emittedCallIds = new Set<string>();
   private partialTranscript = "";
   private reconnectTimer?: NodeJS.Timeout;
   private manuallyClosed = false;
@@ -104,8 +105,35 @@ export class RealtimeVoiceClient extends EventEmitter {
         tools: [
           {
             type: "function",
+            name: "code_intents",
+            description: "One or more independent structured coding instructions from the user",
+            parameters: {
+              type: "object",
+              properties: {
+                intents: {
+                  type: "array",
+                  minItems: 1,
+                  items: {
+                    type: "object",
+                    properties: {
+                      action: {
+                        type: "string",
+                        enum: ["create", "edit", "delete", "explain", "run", "undo"]
+                      },
+                      target: {type: "string"},
+                      description: {type: "string"}
+                    },
+                    required: ["action", "description"]
+                  }
+                }
+              },
+              required: ["intents"]
+            }
+          },
+          {
+            type: "function",
             name: "code_intent",
-            description: "Structured coding instruction from the user",
+            description: "Single structured coding instruction from the user. Prefer code_intents when there are multiple tasks.",
             parameters: {
               type: "object",
               properties: {
@@ -125,7 +153,11 @@ export class RealtimeVoiceClient extends EventEmitter {
           "Extract coding instructions as structured intents.",
           "Never generate code yourself.",
           "If the user is thinking aloud, narrating, or not giving an instruction, wait.",
-          "When the instruction is actionable, call code_intent exactly once.",
+          "When the user gives one or more actionable coding tasks, call code_intents exactly once.",
+          "If a single utterance contains multiple independent tasks, split them into separate intents so separate coding agents can work in parallel.",
+          "Examples: 'make the nav red and widen the filter to 300px' becomes two intents: one targeting navigation, one targeting filter.",
+          "Do not split tightly coupled steps that must happen in the same file/change; keep those as one intent.",
+          "Use short, specific targets like 'navigation', 'filter panel', 'card hover indicator', or 'typecheck'.",
           "Use action=undo when the user asks to undo, revert, or go back."
         ].join(" ")
       }
@@ -198,10 +230,14 @@ export class RealtimeVoiceClient extends EventEmitter {
     }
 
     if (type === "response.function_call_arguments.done") {
+      if (this.emittedCallIds.has(callId)) {
+        return;
+      }
       const call = this.pendingCalls.get(callId) ?? {arguments: ""};
-      call.name = String(event.name ?? call.name ?? "code_intent");
+      call.name = String(event.name ?? call.name ?? "code_intents");
       call.arguments = String(event.arguments ?? call.arguments);
       this.pendingCalls.delete(callId);
+      this.emittedCallIds.add(callId);
       this.emitIntent(call);
       return;
     }
@@ -212,23 +248,39 @@ export class RealtimeVoiceClient extends EventEmitter {
         return;
       }
 
+      if (this.emittedCallIds.has(callId)) {
+        return;
+      }
+
+      this.emittedCallIds.add(callId);
       this.emitIntent({
-        name: String(item.name ?? "code_intent"),
+        name: String(item.name ?? "code_intents"),
         arguments: String(item.arguments ?? "")
       });
     }
   }
 
   private emitIntent(call: PendingFunctionCall) {
-    if (call.name && call.name !== "code_intent") {
+    if (call.name && call.name !== "code_intent" && call.name !== "code_intents") {
       return;
     }
 
     try {
-      const intent = JSON.parse(call.arguments) as CodeIntent;
-      if (intent.description) {
-        intent.transcript = this.partialTranscript.trim() || intent.transcript;
-        this.emit("intent", intent);
+      const parsed = JSON.parse(call.arguments) as CodeIntent | {intents?: CodeIntent[]};
+      const intents = "intents" in parsed && Array.isArray(parsed.intents)
+        ? parsed.intents
+        : [parsed as CodeIntent];
+
+      const transcript = this.partialTranscript.trim();
+      const validIntents = intents
+        .filter((intent) => intent?.description)
+        .map((intent) => ({...intent, transcript: transcript || intent.transcript}));
+
+      if (validIntents.length > 0) {
+        this.emit("intents", validIntents);
+        for (const intent of validIntents) {
+          this.emit("intent", intent);
+        }
       }
     } catch (error) {
       this.emit("error", new Error(`Could not parse code intent: ${(error as Error).message}`));
